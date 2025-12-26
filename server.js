@@ -114,6 +114,7 @@ app.get('/api/memories', (req, res) => {
 
 app.post('/api/entries', async (req, res) => {
   const { content, options, name, sub } = req.body;
+
   // Get or create device ID from cookie or header
   let deviceId = req.headers['x-device-id'] || 'default';
   // If no header, generate one (but better from frontend — see below)
@@ -126,43 +127,82 @@ app.post('/api/entries', async (req, res) => {
   if (req.body.options?.trim().toLowerCase() === 'clear') {
   console.log('Clear command triggered!');
 
-  //clearing
-  db.serialize(() => {
+    //clearing
+    db.serialize(() => {
+      db.run('DELETE FROM entries', function(err) {
+        if (err) {
+          console.error('Delete failed:', err); //deletes entries
+        }
+      });
+      db.run('DELETE FROM sqlite_sequence WHERE name="entries"', function(err) {
+        if (err) {
+          console.error('Reset sequence failed:', err); //deletes and resets
+        } else {
+          console.log('ID counter reset to 1');
+        }
+      });
+      db.run('DELETE FROM memories', function(err) {
+          if (err) {
+            console.error('Delete memories failed:', err); //deletes memories
+          }
+        });
+      db.run('DELETE FROM sqlite_sequence WHERE name="memories"', function(err) {
+          if (err) {
+            console.error('Reset sequence failed:', err);//deletes them too
+          }
+        });
+    });
+
     db.run('DELETE FROM entries', function(err) {
       if (err) {
-        console.error('Delete failed:', err); //deletes entries
+        console.error('Clear failed:', err);
+        return res.status(500).json({ error: 'Clear failed' });
       }
+      console.log('Database cleared by admin command');
+      res.json({ message: 'All entries deleted. Database cleared.' });
     });
-    db.run('DELETE FROM sqlite_sequence WHERE name="entries"', function(err) {
+
+    return;
+  }
+
+  if (req.body.sub?.trim().toLowerCase() === "memory") {
+    console.log('Memory dump requested');
+
+    db.all('SELECT * FROM memories ORDER BY created_at DESC', [], (err, rows) => {
       if (err) {
-        console.error('Reset sequence failed:', err); //deletes and resets
-      } else {
-        console.log('ID counter reset to 1');
+        console.error('Memory dump failed:', err);
+        return res.status(500).json({ error: 'Failed to fetch memories' });
       }
+
+      if (rows.length === 0) {
+        return res.json({ greentext: '>be me\n>no memories yet\n>mfw empty mind' });
+      }
+
+      // Build a big greentext post listing all memories
+      let lines = ['>be me', '>memory dump activated', '>all key memories from the diary:'];
+
+      rows.forEach(row => {
+        // Assuming memories table has columns like created_at and memory_text
+        const date = new Date(row.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' });
+        const memory = row.memory_text || row.key_memory || row.memory || 'unknown memory'; // adjust column name as needed
+        lines.push(`>${date}: ${memory}`);
+      });
+
+      lines.push('>mfw reliving the entire arc');
+      lines.push('>end of memory dump');
+
+      const greentext = lines.join('\n');
+
+      res.json({
+        greentext: greentext,
+        name: 'Anonymous',
+        sub: 'Memory Dump',
+        content: 'Full memory recall'
+      });
     });
-    db.run('DELETE FROM memories', function(err) {
-        if (err) {
-          console.error('Delete memories failed:', err); //deletes memories
-        }
-      });
-    db.run('DELETE FROM sqlite_sequence WHERE name="memories"', function(err) {
-        if (err) {
-          console.error('Reset sequence failed:', err);//deletes them too
-        }
-      });
-  });
 
-  db.run('DELETE FROM entries', function(err) {
-    if (err) {
-      console.error('Clear failed:', err);
-      return res.status(500).json({ error: 'Clear failed' });
-    }
-    console.log('Database cleared by admin command');
-    res.json({ message: 'All entries deleted. Database cleared.' });
-  });
-
-  return;
-}
+    return; // prevent normal posting
+  }
   
   if (!content || content.trim() === '') {
     return res.status(400).json({ error: 'Content is required' });
