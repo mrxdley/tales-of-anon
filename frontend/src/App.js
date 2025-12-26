@@ -76,7 +76,7 @@ function App() {
       device_id: DEVICE_ID
     };
 
-    if (!payload.content && !payload.options) {
+    if (!payload.content && !payload.options && !payload.sub) {
       alert('Write something, anon.');
       return;
     }
