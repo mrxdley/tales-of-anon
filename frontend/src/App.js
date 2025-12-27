@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import './App.css';
-import { raw } from 'express';
 
 const API_URL = 'http://localhost:3001/api';
 

@@ -52,16 +52,16 @@ const db = new sqlite3.Database('./diary.db', (err) => {
   }
 });
 
-
 // ---- memory system----
 // First, modify getMemoriesForContext to return a Promise instead of using callbacks
-function getMemoriesForContext() {
+function getMemoriesForContext(deviceId) {
   return new Promise((resolve, reject) => {
     db.all(
       `SELECT memory_text FROM memories 
+       WHERE device_id = ?
        ORDER BY created_at DESC 
        LIMIT 6`,
-      [],
+      [deviceId],
       (err, rows) => {
         if (err) {
           reject(err);
@@ -145,51 +145,40 @@ app.post('/api/entries', async (req, res) => {
 
   console.log('Received body:', req.body);  // log entire payload
 
-  if (req.body.options?.trim().toLowerCase() === 'clear') {
-  console.log('Clear command triggered!');
+if (req.body.options?.trim().toLowerCase() === 'clear') {
+  const deviceId = req.body.device_id || 'default';
+  console.log('Clear command triggered for device:', deviceId);
 
-    //clearing
-    db.serialize(() => {
-      db.run('DELETE FROM entries', function(err) {
-        if (err) {
-          console.error('Delete failed:', err); //deletes entries
-        }
-      });
-      db.run('DELETE FROM sqlite_sequence WHERE name="entries"', function(err) {
-        if (err) {
-          console.error('Reset sequence failed:', err); //deletes and resets
-        } else {
-          console.log('ID counter reset to 1');
-        }
-      });
-      db.run('DELETE FROM memories', function(err) {
-          if (err) {
-            console.error('Delete memories failed:', err); //deletes memories
-          }
-        });
-      db.run('DELETE FROM sqlite_sequence WHERE name="memories"', function(err) {
-          if (err) {
-            console.error('Reset sequence failed:', err);//deletes them too
-          }
-        });
+  db.serialize(() => {
+    // Delete only this device's entries
+    db.run('DELETE FROM entries WHERE device_id = ?', [deviceId], function(err) {
+      if (err) console.error('Delete entries failed:', err);
+      else console.log(`Deleted ${this.changes} entries for device`);
     });
 
-    db.run('DELETE FROM entries', function(err) {
-      if (err) {
-        console.error('Clear failed:', err);
-        return res.status(500).json({ error: 'Clear failed' });
-      }
-      console.log('Database cleared by admin command');
-      res.json({ message: 'All entries deleted. Database cleared.' });
-    });
+    // Reset auto-increment only if no entries left for this device (optional, safe)
+    // SQLite doesn't support per-device reset easily, so we skip counter reset
+    // or you can live with global counter — it's fine for public use
 
-    return;
-  }
+    // Delete only this device's memories
+    db.run('DELETE FROM memories WHERE device_id = ?', [deviceId], function(err) {
+      if (err) console.error('Delete memories failed:', err);
+      else console.log(`Deleted ${this.changes} memories for device`);
+    });
+  });
+
+  // Send success response
+  res.json({ 
+    message: `Diary cleared for this device only. ${deviceId === 'default' ? '(default)' : ''}` 
+  });
+
+  return; // stop normal posting
+}
 
   if (req.body.options?.trim().toLowerCase() === "memory") {
     console.log('Memory recall requested');
 
-    db.all('SELECT * FROM memories ORDER BY created_at DESC', [], (err, rows) => {
+    db.all('SELECT * FROM memories WHERE device_id = ? ORDER BY created_at DESC', [deviceId], (err, rows) => {
       if (err) {
         return res.status(500).json({ error: 'Failed to fetch memories' });
       }
@@ -210,14 +199,29 @@ app.post('/api/entries', async (req, res) => {
       lines.push('>mfw this is who I am now');
       const greentext = lines.join('\n');
 
-      // Send back exactly like a normal post response
-      res.json({
-        id: Date.now(),  // fake ID so frontend treats it like real post
-        greentext: greentext,
-        name: 'Anonymous',
-        sub: 'My Memories',
-        created_at: new Date().toISOString()
-      });
+      db.run(
+        'INSERT INTO entries (content, greentext, name, sub, device_id) VALUES (?, ?, ?, ?,?)',
+        [content.trim(), greentext, req.body.name || 'Anonymous', req.body.sub || '', deviceId],
+        function(err) {
+          if (err) {
+            console.error('DB error:', err);
+            return res.status(500).json({ error: 'Failed to save entry' });
+          }
+          
+          const entryId = this.lastID;
+          
+          res.json({
+            id: entryId,
+            content: content.trim(),
+            greentext,
+            memories: '',
+            name: req.body.name || 'Anonymous',
+            sub: req.body.sub || '',
+            created_at: new Date().toISOString()
+          });
+        }
+      );
+
     });
 
     return; // stop normal flow
@@ -228,7 +232,7 @@ app.post('/api/entries', async (req, res) => {
   } 
 
   try {
-    const previousMemories = await getMemoriesForContext();
+    const previousMemories = await getMemoriesForContext(deviceId);
     let memoryContext = '';
     if (previousMemories.length > 0) {
       memoryContext = '\n\nUser\'s previous key memories:\n';
@@ -246,11 +250,12 @@ app.post('/api/entries', async (req, res) => {
   2. Use > at the start of every line
   3. Make it funny, ironic, self-deprecating
   4. End with "mfw" or "tfw" if appropriate
-  4. If the journal entry is longer than 4 or 5 lines, write an appropriate comment/observation after the greentext from the perspective of the user, without the >
+  4. ONLY If the journal entry is longer than 5 lines, write an appropriate comment/observation after the greentext from the perspective of the user, without the >
   5. Occasionally use format like: emotion.fileextension
   6. After the greentext, on a new line, write 1 short summary about the user's patterns/habits/emotions but only IF they are MAJOR OR IMPORTANT
   7. Format each memory as: [memory: short memory text]
-  8. every memory must have a unique topic
+  8. NEVER EVER CREATE DUPLICATE MEMORIES
+  9. NEVER EVER REFER TO "the user"
 
   Example:
   > be me
@@ -318,8 +323,8 @@ app.post('/api/entries', async (req, res) => {
           extractedMemories.forEach(memory => {
             if (memory && memory.trim().length > 0) {
               db.run(
-                'INSERT INTO memories (memory_text, entry_id) VALUES (?, ?)',
-                [memory.trim(), entryId],
+                'INSERT INTO memories (memory_text, entry_id, device_id) VALUES (?, ?,?)',
+                [memory.trim(), entryId, deviceId],
                 (err) => {
                   if (err) {
                     console.error('FAILED to save memory:', err);
